@@ -5,6 +5,7 @@ import User from "./models/User.js";
 import cors from "cors";
 import jwt from "jsonwebtoken";
 import Group from "./models/Group.js";
+import Session from "./models/Session.js";
 
 const app = express();
 dotenv.config();
@@ -70,12 +71,10 @@ app.post("/signIn", async (req, res) => {
     const user = await User.findOne({ email: email });
 
     if (!user) {
-      console.log("user!!!");
       return res.send({ status: "error", data: "User not found" });
     }
 
     if (user.password !== password) {
-      console.log("parola");
       return res.send({
         status: "error",
         data: "Incorrect password. Try again.",
@@ -98,13 +97,35 @@ app.post("/signIn", async (req, res) => {
   }
 });
 
+app.post("/checkUserExistence", async (req, res) => {
+  const { field, value } = req.body;
+
+  if (!["username", "email"].includes(field)) {
+    return res
+      .status(400)
+      .send({ available: false, message: "Invalid field." });
+  }
+
+  const query = {};
+  query[field] = value;
+
+  try {
+    const existingUser = await User.findOne(query);
+    res.send({ available: !existingUser });
+  } catch (error) {
+    res
+      .status(500)
+      .send({ available: false, message: "Error checking user availability." });
+  }
+});
+
 app.post("/createGroup", async (req, res) => {
   const { name, description, subject, privacy, creator } = req.body;
 
   const anotherGroup = await Group.findOne({ name: name });
 
   if (anotherGroup) {
-    return res.send({ data: "Group name taken!" });
+    return res.send({ data: "Group name taken!", success: false });
   }
 
   try {
@@ -124,6 +145,29 @@ app.post("/createGroup", async (req, res) => {
     });
   } catch (error) {
     res.send({ status: "error", data: error });
+  }
+});
+
+app.post("/checkGroupExistence", async (req, res) => {
+  const { field, value } = req.body;
+
+  if (!["name"].includes(field)) {
+    return res
+      .status(400)
+      .send({ available: false, message: "Invalid field." });
+  }
+
+  const query = {};
+  query[field] = value;
+
+  try {
+    const existingGroup = await Group.findOne(query);
+    res.send({ available: !existingGroup });
+  } catch (error) {
+    res.status(500).send({
+      available: false,
+      message: "Error checking group availability.",
+    });
   }
 });
 
@@ -154,5 +198,93 @@ app.get("/fetchMemeberGroups/:username", async (req, res) => {
     });
   } catch (error) {
     res.json("Groups have not been fetched correctly!");
+  }
+});
+
+app.post("/createSession", async (req, res) => {
+  const { name, startDate, endDate, startTime, endTime, groupId, acceptedBy } =
+    req.body;
+  try {
+    const existingSession = await Session.findOne({
+      groupId,
+      $or: [
+        {
+          startDateTime: { $lt: endDateTime },
+          endDateTime: { $gt: startDateTime },
+        },
+        {
+          startDateTime: { $gte: startDateTime },
+          endDateTime: { $lte: endDateTime },
+        },
+      ],
+    });
+
+    if (existingSession) {
+      return res
+        .status(400)
+        .json({ message: "Session interferes with another session!" });
+    }
+
+    const newSession = await Session.create({
+      name: name,
+      startDate: startDate,
+      endDate: endDate,
+      startTime: startTime,
+      endTime: endTime,
+      groupId: groupId,
+      acceptedBy: acceptedBy,
+    });
+
+    res.status(201).json({
+      success: true,
+      message: "Session created successfully!",
+      session: newSession,
+    });
+  } catch (error) {
+    res.status(500).json({ message: "Error creating session.", error });
+  }
+});
+
+app.post("/checkSessionsOverlap", async (req, res) => {
+  const { startDate, endDate, startTime, endTime, groupId } = req.body;
+
+  if (!startDate || !endDate || !startTime || !endTime || !groupId) {
+    return res.status(400).send({
+      available: false,
+      message: "Missing required fields.",
+    });
+  }
+
+  const startDateTime = new Date(`${startDate}T${startTime}:00`);
+  const endDateTime = new Date(`${endDate}T${endTime}:00`);
+
+  try {
+    const overlappingSession = await Session.findOne({
+      groupId,
+      $or: [
+        {
+          startDateTime: { $lt: endDateTime },
+          endDateTime: { $gt: startDateTime },
+        },
+        {
+          startDateTime: { $gte: startDateTime },
+          endDateTime: { $lte: endDateTime },
+        },
+      ],
+    });
+
+    if (overlappingSession) {
+      return res.status(409).send({
+        available: false,
+        message: "Session times overlap with an existing session.",
+      });
+    }
+
+    res.send({ available: true });
+  } catch (error) {
+    res.status(500).send({
+      available: false,
+      message: "Error checking session overlap.",
+    });
   }
 });
