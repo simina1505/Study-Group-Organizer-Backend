@@ -6,6 +6,12 @@ import cors from "cors";
 import jwt from "jsonwebtoken";
 import Group from "./models/Group.js";
 import Session from "./models/Session.js";
+import multer from "multer";
+import File from "./models/Files.js";
+import Message from "./models/Message.js";
+
+const storage = multer.memoryStorage();
+const upload = multer({ storage: storage });
 
 const app = express();
 dotenv.config();
@@ -90,6 +96,7 @@ app.post("/signIn", async (req, res) => {
         message: "User logged in successfully!",
         token: token,
         username: user.username,
+        userId: user._id,
       });
     }
   } catch (error) {
@@ -204,25 +211,51 @@ app.get("/fetchMemeberGroups/:username", async (req, res) => {
 app.post("/createSession", async (req, res) => {
   const { name, startDate, endDate, startTime, endTime, groupId, acceptedBy } =
     req.body;
-  try {
-    const existingSession = await Session.findOne({
-      groupId,
-      $or: [
-        {
-          startDateTime: { $lt: endDateTime },
-          endDateTime: { $gt: startDateTime },
-        },
-        {
-          startDateTime: { $gte: startDateTime },
-          endDateTime: { $lte: endDateTime },
-        },
-      ],
-    });
 
-    if (existingSession) {
+  try {
+    const getTimestamp = (date, time) => {
+      const dateStr =
+        date instanceof Date ? date.toISOString().split("T")[0] : date;
+      const [hour, minute] = time.split(":");
+      const [year, month, day] = dateStr.split("-");
+
+      const dateTime = new Date(year, month - 1, day, hour, minute);
+      return dateTime.getTime();
+    };
+
+    const newStartTimestamp = getTimestamp(startDate, startTime);
+    const newEndTimestamp = getTimestamp(endDate, endTime);
+
+    if (isNaN(newStartTimestamp) || isNaN(newEndTimestamp)) {
       return res
         .status(400)
-        .json({ message: "Session interferes with another session!" });
+        .json({ success: false, message: "Invalid start or end date/time." });
+    }
+
+    const sessions = await Session.find({ groupId });
+
+    const isValid = sessions.every((session) => {
+      const sessionStartTimestamp = getTimestamp(
+        session.startDate,
+        session.startTime
+      );
+      const sessionEndTimestamp = getTimestamp(
+        session.endDate,
+        session.endTime
+      );
+
+      return (
+        newEndTimestamp <= sessionStartTimestamp ||
+        newStartTimestamp >= sessionEndTimestamp
+      );
+    });
+
+    if (!isValid) {
+      res.status(400).json({
+        success: false,
+        message: "The session overlaps with an existing session.",
+      });
+      return;
     }
 
     const newSession = await Session.create({
@@ -241,50 +274,119 @@ app.post("/createSession", async (req, res) => {
       session: newSession,
     });
   } catch (error) {
-    res.status(500).json({ message: "Error creating session.", error });
+    console.error("Error creating session:", error);
+    res.status(500).json({
+      success: false,
+      message: "Error creating session.",
+      error: error.message,
+    });
   }
 });
 
-app.post("/checkSessionsOverlap", async (req, res) => {
-  const { startDate, endDate, startTime, endTime, groupId } = req.body;
-
-  if (!startDate || !endDate || !startTime || !endTime || !groupId) {
-    return res.status(400).send({
-      available: false,
-      message: "Missing required fields.",
-    });
-  }
-
-  const startDateTime = new Date(`${startDate}T${startTime}:00`);
-  const endDateTime = new Date(`${endDate}T${endTime}:00`);
+app.get("/fetchUserSessions/:username", async (req, res) => {
+  const username = req.params.username;
 
   try {
-    const overlappingSession = await Session.findOne({
-      groupId,
-      $or: [
-        {
-          startDateTime: { $lt: endDateTime },
-          endDateTime: { $gt: startDateTime },
-        },
-        {
-          startDateTime: { $gte: startDateTime },
-          endDateTime: { $lte: endDateTime },
-        },
-      ],
+    const sessions = await Session.find({
+      acceptedBy: username,
     });
 
-    if (overlappingSession) {
-      return res.status(409).send({
-        available: false,
-        message: "Session times overlap with an existing session.",
-      });
-    }
-
-    res.send({ available: true });
+    res.json({
+      success: true,
+      sessions: sessions || [],
+    });
   } catch (error) {
-    res.status(500).send({
-      available: false,
-      message: "Error checking session overlap.",
+    res.status(500).json({
+      success: false,
+      message: "Error fetching user sessions",
+      error: error.message,
+    });
+  }
+});
+
+app.post("/uploadFile", upload.single("file"), async (req, res) => {
+  const { senderId, groupId, content } = req.body;
+  const file = req.file;
+  try {
+    const newFile = await File.create({
+      fileName: file.originalname,
+      fileData: file.buffer,
+      senderId,
+      groupId,
+    });
+
+    const newMessage = await Message.create({
+      senderId,
+      groupId,
+      content,
+      file: newFile._id, // Save the file ID in the message
+      timestamp: new Date(),
+    });
+
+    res.json({
+      success: true,
+      file: newFile,
+      message: newMessage,
+    });
+  } catch (error) {
+    console.error("Error uploading file:", error);
+    res.status(500).json({ success: false, message: "Error uploading file." });
+  }
+});
+
+// Send a message endpoint
+app.post("/sendMessage", async (req, res) => {
+  const { senderId, groupId, content } = req.body;
+  try {
+    const newMessage = await Message.create({
+      senderId,
+      groupId,
+      content,
+    });
+    res.status(200).json({ success: true, message: "message sent" });
+  } catch (error) {
+    res
+      .status(500)
+      .json({ success: false, message: "Error sending message", error });
+  }
+});
+
+app.get("/fetchMessagesandFiles/:groupId", async (req, res) => {
+  try {
+    const groupId = req.params.groupId;
+
+    // Fetch messages with populated senderId to get the username of the sender
+    const messages = await Message.find({ groupId });
+
+    // Fetch files related to the group (if necessary)
+    const files = await File.find({ groupId });
+
+    // Format the response to send only necessary data
+    const formattedMessages = messages.map((message) => {
+      return {
+        _id: message._id,
+        content: message.content,
+        senderId: message.senderId.username, // Ensure we're sending only the username of the sender
+        fileName: message.file ? message.file.fileName : null, // Attach file info if present
+      };
+    });
+
+    const formattedFiles = files.map((file) => ({
+      _id: file._id,
+      fileName: file.fileName,
+      senderId: file.senderId,
+    }));
+
+    res.json({
+      success: true,
+      messages: formattedMessages,
+      files: formattedFiles,
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: "Error fetching messages and files",
+      error,
     });
   }
 });
