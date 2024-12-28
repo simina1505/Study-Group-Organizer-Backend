@@ -9,6 +9,7 @@ import Session from "./models/Session.js";
 import multer from "multer";
 import File from "./models/Files.js";
 import Message from "./models/Message.js";
+import { GridFSBucket } from "mongodb";
 
 const storage = multer.memoryStorage();
 const upload = multer({ storage: storage });
@@ -31,6 +32,13 @@ mongoose
   .catch((error) => {
     console.log(error);
   });
+
+let gfs;
+mongoose.connection.on("connected", () => {
+  const db = mongoose.connection.db;
+  gfs = new GridFSBucket(db, { bucketName: "uploads" });
+  console.log("GridFS initialized.");
+});
 
 app.use(cors());
 app.use(express.json());
@@ -303,90 +311,187 @@ app.get("/fetchUserSessions/:username", async (req, res) => {
     });
   }
 });
-
-app.post("/uploadFile", upload.single("file"), async (req, res) => {
-  const { senderId, groupId, content } = req.body;
-  const file = req.file;
-  try {
-    const newFile = await File.create({
-      fileName: file.originalname,
-      fileData: file.buffer,
-      senderId,
-      groupId,
-    });
-
-    const newMessage = await Message.create({
-      senderId,
-      groupId,
-      content,
-      file: newFile._id, // Save the file ID in the message
-      timestamp: new Date(),
-    });
-
-    res.json({
-      success: true,
-      file: newFile,
-      message: newMessage,
-    });
-  } catch (error) {
-    console.error("Error uploading file:", error);
-    res.status(500).json({ success: false, message: "Error uploading file." });
-  }
-});
-
-// Send a message endpoint
 app.post("/sendMessage", async (req, res) => {
   const { senderId, groupId, content } = req.body;
+
   try {
-    const newMessage = await Message.create({
+    const message = await Message.create({
       senderId,
       groupId,
       content,
     });
-    res.status(200).json({ success: true, message: "message sent" });
+
+    res.status(201).json({ success: true, message });
   } catch (error) {
-    res
-      .status(500)
-      .json({ success: false, message: "Error sending message", error });
+    console.error("Error saving message:", error);
+    res.status(500).json({ success: false, message: "Internal server error" });
   }
 });
 
-app.get("/fetchMessagesandFiles/:groupId", async (req, res) => {
+// Save a file message
+app.post("/sendFile", upload.single("file"), async (req, res) => {
+  const { senderId, groupId } = req.body;
+  const file = req.file;
+
   try {
-    const groupId = req.params.groupId;
+    if (!file) {
+      return res
+        .status(400)
+        .json({ success: false, message: "File is required" });
+    }
 
-    // Fetch messages with populated senderId to get the username of the sender
-    const messages = await Message.find({ groupId });
-
-    // Fetch files related to the group (if necessary)
-    const files = await File.find({ groupId });
-
-    // Format the response to send only necessary data
-    const formattedMessages = messages.map((message) => {
-      return {
-        _id: message._id,
-        content: message.content,
-        senderId: message.senderId.username, // Ensure we're sending only the username of the sender
-        fileName: message.file ? message.file.fileName : null, // Attach file info if present
-      };
+    const uploadStream = gfs.openUploadStream(file.originalname, {
+      metadata: { senderId, groupId }, // Store metadata if needed
+      contentType: file.mimetype,
     });
 
-    const formattedFiles = files.map((file) => ({
-      _id: file._id,
-      fileName: file.fileName,
-      senderId: file.senderId,
-    }));
+    uploadStream.end(file.buffer); // Write file buffer to GridFS
 
-    res.json({
-      success: true,
-      messages: formattedMessages,
-      files: formattedFiles,
+    uploadStream.on("finish", async () => {
+      const fileMessage = await File.create({
+        senderId,
+        groupId,
+        fileName: file.originalname,
+        fileData: uploadStream.id,
+      });
+
+      res.status(201).json({ success: true, fileMessage });
     });
   } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: "Error fetching messages and files",
-      error,
-    });
+    console.error("Error saving file:", error);
+    res.status(500).json({ success: false, message: "Internal server error" });
   }
+});
+
+// Retrieve all messages (text and file messages) for a group
+app.get("/fetchMessagesandFiles/:groupId", async (req, res) => {
+  const { groupId } = req.params;
+
+  try {
+    const textMessages = await Message.find({ groupId }).sort({ timestamp: 1 });
+    const fileMessages = await File.find({ groupId }).sort({ timestamp: 1 });
+
+    const fileMessagesWithUrl = await Promise.all(
+      fileMessages.map(async (file) => {
+        const fileUrl = `http://172.20.10.5:8000/files/download/${file.fileData}`; // Assuming this URL structure for file download
+        return {
+          _id: file._id,
+          text: `File: ${file.fileName}`,
+          timestamp: file.timestamp,
+          user: { _id: file.senderId },
+          file: { url: fileUrl, name: file.fileName },
+        };
+      })
+    );
+
+    // Combine text and file messages
+    const allMessages = [...textMessages, ...fileMessagesWithUrl].sort(
+      (a, b) => new Date(a.timestamp) - new Date(b.timestamp)
+    );
+    res.json({
+      success: true,
+      messages: allMessages,
+    });
+  } catch (error) {
+    console.error("Error retrieving messages:", error);
+    res.status(500).json({ success: false, message: "Internal server error" });
+  }
+});
+
+// Retrieve a file by ID
+// app.get("/downloadById/:fileId", (req, res) => {
+//   const fileId = req.params.fileId;
+//   console.log("ajunge aici?");
+
+//   // Find the file in the uploads.files collection using its ID
+//   gfs.find({ _id: mongoose.Types.ObjectId(fileId) }).toArray((err, files) => {
+//     if (err) {
+//       return res.status(500).send("Error finding file metadata");
+//     }
+
+//     if (files.length === 0) {
+//       return res.status(404).send("File not found");
+//     }
+
+//     const file = files[0]; // Assuming we take the first matching file
+
+//     // Set headers for downloading the file
+//     res.setHeader("Content-Type", file.contentType);
+//     res.setHeader(
+//       "Content-Disposition",
+//       `attachment; filename="${file.filename}"`
+//     );
+
+//     // Open the download stream from GridFS and pipe it to the response
+//     const downloadStream = gfs.openDownloadStream(file._id);
+//     downloadStream.pipe(res);
+
+//     downloadStream.on("error", (err) => {
+//       console.error("Error downloading file:", err);
+//       res.status(500).send("Error downloading file");
+//     });
+//   });
+// });
+
+// app.get("/getFileMetadata/:fileName", (req, res) => {
+//   const fileName = req.params.fileName;
+//   console.log("Fetching file metadata for:", fileName);
+//   db.uploads.files.find().pretty();
+//   db.uploads.chunks.find().pretty();
+
+//   if (!gfs) {
+//     console.log("?/");
+//     return res.status(500).send("GridFS not initialized.");
+//   }
+//   console.log("wtf");
+
+//   gfs.find({ filename: fileName }).toArray((err, files) => {
+//     if (err) {
+//       console.log("nu");
+//       return res.status(500).send("Error finding file metadata");
+//     }
+
+//     if (files.length === 0) {
+//       return res.status(404).send("File not found");
+//     }
+
+//     const file = files[0]; // Take the first matching file
+//     console.log(file);
+//     if (file) {
+//       res.json({
+//         fileName: file.filename,
+//         fileId: file._id, // Return the file's ID
+//         contentType: file.contentType,
+//         success: true,
+//       });
+//     } else {
+//       res.json({
+//         success: false,
+//       });
+//     }
+//   });
+// });
+
+app.get("/getImageByName/:fileName", (req, res) => {
+  const fileName = req.params.fileName;
+
+  gfs.find({ filename: fileName }).toArray((err, files) => {
+    if (err) {
+      return res.status(500).json({ error: "Error retrieving file" });
+    }
+
+    if (!files || files.length === 0) {
+      return res.status(404).json({ error: "File not found" });
+    }
+
+    const file = files[0];
+
+    if (file.contentType.includes("image")) {
+      const readStream = gfs.openDownloadStreamByName(fileName); // Use the filename to open a stream
+      res.set("Content-Type", file.contentType); // Set the content type for the response
+      readStream.pipe(res); // Pipe the image file to the response
+    } else {
+      res.status(400).json({ error: "Not an image file" });
+    }
+  });
 });
