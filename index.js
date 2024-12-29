@@ -9,7 +9,7 @@ import Session from "./models/Session.js";
 import multer from "multer";
 import File from "./models/Files.js";
 import Message from "./models/Message.js";
-import { GridFSBucket } from "mongodb";
+import { GridFSBucket, ObjectId } from "mongodb";
 
 const storage = multer.memoryStorage();
 const upload = multer({ storage: storage });
@@ -216,6 +216,43 @@ app.get("/fetchMemeberGroups/:username", async (req, res) => {
   }
 });
 
+app.get("/searchGroups", async (req, res) => {
+  const { query } = req.query;
+  console.log("Search query received:", query);
+
+  try {
+    const groups = await Group.find({
+      name: { $regex: query, $options: "i" },
+    });
+
+    res.json({
+      success: true,
+      groups: groups,
+    });
+    console.log("Groups found:", groups);
+  } catch (error) {
+    res.status(500).json({ success: false, message: "Error searching groups" });
+  }
+});
+
+// app.get("/searchGroups", async (req, res) => {
+//   const { groupId, username } = req.params;
+
+//   try {
+//     const groups = await Group.find({
+//       name: { $regex: query, $options: "i" },
+//     });
+
+//     res.json({
+//       success: true,
+//       groups: groups,
+//     });
+//     console.log("Groups found:", groups);
+//   } catch (error) {
+//     res.status(500).json({ success: false, message: "Error searching groups" });
+//   }
+// });
+
 app.post("/createSession", async (req, res) => {
   const { name, startDate, endDate, startTime, endTime, groupId, acceptedBy } =
     req.body;
@@ -341,11 +378,11 @@ app.post("/sendFile", upload.single("file"), async (req, res) => {
     }
 
     const uploadStream = gfs.openUploadStream(file.originalname, {
-      metadata: { senderId, groupId }, // Store metadata if needed
+      metadata: { senderId, groupId },
       contentType: file.mimetype,
     });
 
-    uploadStream.end(file.buffer); // Write file buffer to GridFS
+    uploadStream.end(file.buffer);
 
     uploadStream.on("finish", async () => {
       const fileMessage = await File.create({
@@ -363,7 +400,6 @@ app.post("/sendFile", upload.single("file"), async (req, res) => {
   }
 });
 
-// Retrieve all messages (text and file messages) for a group
 app.get("/fetchMessagesandFiles/:groupId", async (req, res) => {
   const { groupId } = req.params;
 
@@ -373,7 +409,7 @@ app.get("/fetchMessagesandFiles/:groupId", async (req, res) => {
 
     const fileMessagesWithUrl = await Promise.all(
       fileMessages.map(async (file) => {
-        const fileUrl = `http://172.20.10.5:8000/files/download/${file.fileData}`; // Assuming this URL structure for file download
+        const fileUrl = `http://172.20.10.5:8000/files/download/${file.fileData}`;
         return {
           _id: file._id,
           text: `File: ${file.fileName}`,
@@ -384,7 +420,6 @@ app.get("/fetchMessagesandFiles/:groupId", async (req, res) => {
       })
     );
 
-    // Combine text and file messages
     const allMessages = [...textMessages, ...fileMessagesWithUrl].sort(
       (a, b) => new Date(a.timestamp) - new Date(b.timestamp)
     );
@@ -399,99 +434,119 @@ app.get("/fetchMessagesandFiles/:groupId", async (req, res) => {
 });
 
 // Retrieve a file by ID
-// app.get("/downloadById/:fileId", (req, res) => {
-//   const fileId = req.params.fileId;
-//   console.log("ajunge aici?");
+app.get("/downloadById/:fileId", async (req, res) => {
+  const fileId = req.params.fileId;
+  console.log("Fetching file for download with ID:", fileId);
+  if (!gfs) {
+    console.error("GridFS not initialized.");
+    return res
+      .status(500)
+      .json({ success: false, message: "GridFS not initialized." });
+  }
 
-//   // Find the file in the uploads.files collection using its ID
-//   gfs.find({ _id: mongoose.Types.ObjectId(fileId) }).toArray((err, files) => {
-//     if (err) {
-//       return res.status(500).send("Error finding file metadata");
-//     }
-
-//     if (files.length === 0) {
-//       return res.status(404).send("File not found");
-//     }
-
-//     const file = files[0]; // Assuming we take the first matching file
-
-//     // Set headers for downloading the file
-//     res.setHeader("Content-Type", file.contentType);
-//     res.setHeader(
-//       "Content-Disposition",
-//       `attachment; filename="${file.filename}"`
-//     );
-
-//     // Open the download stream from GridFS and pipe it to the response
-//     const downloadStream = gfs.openDownloadStream(file._id);
-//     downloadStream.pipe(res);
-
-//     downloadStream.on("error", (err) => {
-//       console.error("Error downloading file:", err);
-//       res.status(500).send("Error downloading file");
-//     });
-//   });
-// });
-
-// app.get("/getFileMetadata/:fileName", (req, res) => {
-//   const fileName = req.params.fileName;
-//   console.log("Fetching file metadata for:", fileName);
-//   db.uploads.files.find().pretty();
-//   db.uploads.chunks.find().pretty();
-
-//   if (!gfs) {
-//     console.log("?/");
-//     return res.status(500).send("GridFS not initialized.");
-//   }
-//   console.log("wtf");
-
-//   gfs.find({ filename: fileName }).toArray((err, files) => {
-//     if (err) {
-//       console.log("nu");
-//       return res.status(500).send("Error finding file metadata");
-//     }
-
-//     if (files.length === 0) {
-//       return res.status(404).send("File not found");
-//     }
-
-//     const file = files[0]; // Take the first matching file
-//     console.log(file);
-//     if (file) {
-//       res.json({
-//         fileName: file.filename,
-//         fileId: file._id, // Return the file's ID
-//         contentType: file.contentType,
-//         success: true,
-//       });
-//     } else {
-//       res.json({
-//         success: false,
-//       });
-//     }
-//   });
-// });
-
-app.get("/getImageByName/:fileName", (req, res) => {
-  const fileName = req.params.fileName;
-
-  gfs.find({ filename: fileName }).toArray((err, files) => {
-    if (err) {
-      return res.status(500).json({ error: "Error retrieving file" });
+  try {
+    if (!ObjectId.isValid(fileId)) {
+      console.error("Invalid file ID:", fileId);
+      return res
+        .status(400)
+        .json({ success: false, message: "Invalid file ID." });
     }
 
+    const objectId = new ObjectId(fileId);
+
+    const file = await gfs.find({ _id: objectId }).toArray();
+
+    if (!file || file.length === 0) {
+      console.warn("File not found:", fileId);
+      return res
+        .status(404)
+        .json({ success: false, message: "File not found." });
+    }
+    const encodedFilename = encodeURIComponent(file[0].filename);
+
+    const downloadStream = gfs.openDownloadStream(objectId);
+
+    res.set({
+      "Content-Type": file[0].contentType,
+      "Content-Disposition": `attachment; filename*=UTF-8''${encodedFilename}`,
+    });
+
+    downloadStream.on("error", (err) => {
+      console.error("Error during file download:", err);
+      res
+        .status(500)
+        .json({ success: false, message: "Error during file download." });
+    });
+
+    downloadStream.pipe(res);
+    console.log("e ok");
+  } catch (err) {
+    console.error("Error finding file:", err);
+    res.status(500).json({ success: false, message: "Error fetching file." });
+  }
+});
+
+app.get("/getImageByName/:fileName", async (req, res) => {
+  const { fileName } = req.params;
+
+  try {
+    const files = await gfs.find({ filename: fileName }).toArray();
+
     if (!files || files.length === 0) {
-      return res.status(404).json({ error: "File not found" });
+      return res.status(404).json({ error: "Image not found" });
     }
 
     const file = files[0];
 
     if (file.contentType.includes("image")) {
-      const readStream = gfs.openDownloadStreamByName(fileName); // Use the filename to open a stream
-      res.set("Content-Type", file.contentType); // Set the content type for the response
-      readStream.pipe(res); // Pipe the image file to the response
+      const readStream = gfs.openDownloadStreamByName(fileName);
+      res.setHeader("Content-Type", file.contentType);
+      readStream.pipe(res);
     } else {
       res.status(400).json({ error: "Not an image file" });
     }
-  });
+  } catch (error) {
+    console.error("Error retrieving image:", error);
+    res.status(500).json({ error: "Error retrieving image" });
+  }
+});
+
+app.get("/getFileMetadata/:fileName", async (req, res) => {
+  const fileName = req.params.fileName;
+  console.log("Fetching file metadata for:", fileName);
+
+  if (!gfs) {
+    console.error("GridFS not initialized.");
+    return res
+      .status(500)
+      .json({ success: false, message: "GridFS not initialized." });
+  }
+
+  try {
+    const files = await gfs.find({ filename: fileName }).toArray();
+
+    if (!files || files.length === 0) {
+      console.warn("File not found:", fileName);
+      return res
+        .status(404)
+        .json({ success: false, message: "File not found." });
+    }
+
+    const file = files[0];
+    console.log("File metadata fetched successfully:", file);
+
+    res.status(200).json({
+      success: true,
+      fileName: file.filename,
+      fileId: file._id,
+      contentType: file.contentType,
+      uploadDate: file.uploadDate,
+      length: file.length,
+    });
+  } catch (error) {
+    console.error("Error fetching file metadata:", error);
+    res
+      .status(500)
+      .json({ success: false, message: "Error fetching file metadata." });
+  }
 });
