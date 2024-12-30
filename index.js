@@ -10,6 +10,8 @@ import multer from "multer";
 import File from "./models/Files.js";
 import Message from "./models/Message.js";
 import { GridFSBucket, ObjectId } from "mongodb";
+import crypto from "crypto";
+import QRCode from "qrcode";
 
 const storage = multer.memoryStorage();
 const upload = multer({ storage: storage });
@@ -151,6 +153,7 @@ app.post("/createGroup", async (req, res) => {
       privacy: privacy,
       creator: creator,
       members: [],
+      requests: [],
     });
 
     res.json({
@@ -201,11 +204,11 @@ app.get("/fetchOwnedGroups/:username", async (req, res) => {
   }
 });
 
-app.get("/fetchMemeberGroups/:username", async (req, res) => {
+app.get("/fetchMemberGroups/:username", async (req, res) => {
   try {
     const loggedUser = req.params.username;
-    const groups = await Group.find({ member: loggedUser });
-
+    const groups = await Group.find({ members: { $in: [loggedUser] } });
+    console.log(groups);
     res.json({
       success: true,
       message: `Groups ${loggedUser} is a memember of fetched successfully!`,
@@ -216,13 +219,32 @@ app.get("/fetchMemeberGroups/:username", async (req, res) => {
   }
 });
 
+app.get("/fetchGroup/:groupId", async (req, res) => {
+  try {
+    const groupId = req.params.groupId;
+    const group = await Group.findById(groupId);
+    console.log(group);
+    res.json({
+      success: true,
+      message: `Group is fetched successfully!`,
+      group: group,
+    });
+  } catch (error) {
+    res.json("Group has not been fetched correctly!");
+  }
+});
+
 app.get("/searchGroups", async (req, res) => {
   const { query } = req.query;
   console.log("Search query received:", query);
 
   try {
     const groups = await Group.find({
-      name: { $regex: query, $options: "i" },
+      privacy: "Public",
+      $or: [
+        { name: { $regex: query, $options: "i" } },
+        { subject: { $regex: query, $options: "i" } },
+      ],
     });
 
     res.json({
@@ -235,23 +257,86 @@ app.get("/searchGroups", async (req, res) => {
   }
 });
 
-// app.get("/searchGroups", async (req, res) => {
-//   const { groupId, username } = req.params;
+app.post("/sendRequestToJoin", async (req, res) => {
+  const { groupId, username } = req.body; // Use req.query for query parameters or req.body for POST
 
-//   try {
-//     const groups = await Group.find({
-//       name: { $regex: query, $options: "i" },
-//     });
+  try {
+    const group = await Group.findByIdAndUpdate(
+      groupId,
+      { $push: { requests: username } },
+      { new: true }
+    );
 
-//     res.json({
-//       success: true,
-//       groups: groups,
-//     });
-//     console.log("Groups found:", groups);
-//   } catch (error) {
-//     res.status(500).json({ success: false, message: "Error searching groups" });
-//   }
-// });
+    if (!group) {
+      return res
+        .status(404)
+        .json({ success: false, message: "Group not found" });
+    }
+
+    res.json({
+      success: true,
+      group: group,
+    });
+    console.log("Request added to group:", group);
+  } catch (error) {
+    console.error("Error updating group:", error);
+    res.status(500).json({ success: false, message: "Error updating group" });
+  }
+});
+
+app.post("/acceptRequest", async (req, res) => {
+  const { groupId, username } = req.body; // Use req.query for query parameters or req.body for POST
+  console.log(username);
+  try {
+    const group = await Group.findByIdAndUpdate(
+      groupId,
+      { $push: { members: username }, $pull: { requests: username } },
+      { new: true }
+    );
+    console.log(group);
+    if (!group) {
+      return res
+        .status(404)
+        .json({ success: false, message: "Group not found" });
+    }
+
+    res.json({
+      success: true,
+      group: group,
+    });
+    console.log("Member added to group:", group);
+  } catch (error) {
+    console.error("Error updating group:", error);
+    res.status(500).json({ success: false, message: "Error updating group" });
+  }
+});
+
+app.post("/declineRequest", async (req, res) => {
+  const { groupId, username } = req.body; // Use req.query for query parameters or req.body for POST
+
+  try {
+    const group = await Group.findByIdAndUpdate(
+      groupId,
+      { $pull: { requests: username } },
+      { new: true }
+    );
+
+    if (!group) {
+      return res
+        .status(404)
+        .json({ success: false, message: "Group not found" });
+    }
+
+    res.json({
+      success: true,
+      group: group,
+    });
+    console.log("Member declined to be added to group:", group);
+  } catch (error) {
+    console.error("Error updating group:", error);
+    res.status(500).json({ success: false, message: "Error updating group" });
+  }
+});
 
 app.post("/createSession", async (req, res) => {
   const { name, startDate, endDate, startTime, endTime, groupId, acceptedBy } =
@@ -548,5 +633,58 @@ app.get("/getFileMetadata/:fileName", async (req, res) => {
     res
       .status(500)
       .json({ success: false, message: "Error fetching file metadata." });
+  }
+});
+
+app.post("/generateGroupQRCode", async (req, res) => {
+  const { groupId, username } = req.body;
+
+  try {
+    const group = await Group.findById(groupId);
+    if (!group || group.creator !== username) {
+      return res
+        .status(403)
+        .json({ message: "You are not the admin of this group." });
+    }
+
+    const token = crypto.randomBytes(16).toString("hex");
+    console.log(token);
+    await Group.findByIdAndUpdate(groupId, { $push: { qrToken: token } });
+
+    const qrCodeData = `http://172.20.10.5:8000/joinGroup?groupId=${groupId}`;
+    const qrCode = await QRCode.toDataURL(qrCodeData);
+
+    res.json({ success: true, qrCode });
+  } catch (error) {
+    res
+      .status(500)
+      .json({ success: false, message: "Error generating QR code." });
+  }
+});
+
+app.post("/joinGroup", async (req, res) => {
+  const { token, username } = req.body;
+  console.log("?");
+  try {
+    const group = await Group.findOne({ qrToken: token });
+    if (!group) {
+      return res.status(404).json({ message: "Group not found." });
+    }
+
+    if (!group.members.includes(username)) {
+      await Group.findByIdAndUpdate(
+        group._id,
+        { $push: { members: username } },
+        { new: true }
+      );
+      return res.json({ success: true, message: "You have joined the group." });
+    }
+
+    res.json({
+      success: false,
+      message: "You are already a member of this group.",
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: "Error joining group." });
   }
 });
