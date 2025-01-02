@@ -13,6 +13,8 @@ import { GridFSBucket, ObjectId } from "mongodb";
 import crypto from "crypto";
 import QRCode from "qrcode";
 import { Buffer } from "buffer";
+import axios from "axios";
+import haversine from "haversine";
 
 const storage = multer.memoryStorage();
 const upload = multer({ storage: storage });
@@ -138,7 +140,7 @@ app.post("/checkUserExistence", async (req, res) => {
 });
 
 app.post("/createGroup", async (req, res) => {
-  const { name, description, subject, privacy, creator } = req.body;
+  const { name, description, subject, privacy, creator, city } = req.body;
 
   const anotherGroup = await Group.findOne({ name: name });
 
@@ -155,6 +157,7 @@ app.post("/createGroup", async (req, res) => {
       creator: creator,
       members: [],
       requests: [],
+      city: city,
     });
 
     res.json({
@@ -242,6 +245,7 @@ app.get("/searchGroups", async (req, res) => {
       $or: [
         { name: { $regex: query, $options: "i" } },
         { subject: { $regex: query, $options: "i" } },
+        { city: { $regex: query, $options: "i" } },
       ],
     });
 
@@ -251,6 +255,43 @@ app.get("/searchGroups", async (req, res) => {
     });
   } catch (error) {
     res.status(500).json({ success: false, message: "Error searching groups" });
+  }
+});
+
+app.delete("/deleteGroup/:groupId", async (req, res) => {
+  const { groupId } = req.params;
+  try {
+    await Group.findByIdAndDelete(groupId);
+    res.json({ success: true, message: "Group deleted successfully" });
+  } catch (error) {
+    res.status(500).json({ success: false, message: "Failed to delete group" });
+  }
+});
+
+app.post("/editGroup/:groupId", async (req, res) => {
+  const { groupId } = req.params;
+  const { name, description, privacy, city, subject } = req.body;
+  try {
+    const updatedGroup = await Group.findByIdAndUpdate(
+      groupId,
+      { name, description, privacy, city, subject },
+      { new: true }
+    );
+    res.json({ success: true, data: updatedGroup });
+  } catch (error) {
+    res.status(500).json({ success: false, message: "Failed to update group" });
+  }
+});
+
+app.post("/leaveGroup", async (req, res) => {
+  const { groupId, username } = req.body;
+  try {
+    const group = await Group.findById(groupId);
+    group.members = group.members.filter((member) => member !== username);
+    await group.save();
+    res.json({ success: true, message: "You have left the group" });
+  } catch (error) {
+    res.status(500).json({ success: false, message: "Failed to leave group" });
   }
 });
 
@@ -405,6 +446,92 @@ app.post("/createSession", async (req, res) => {
   }
 });
 
+app.post("/editSession/:sessionId", async (req, res) => {
+  const { sessionId } = req.params;
+  const { name, startDate, endDate, startTime, endTime, groupId, acceptedBy } =
+    req.body;
+  console.log(sessionId);
+  try {
+    const getTimestamp = (date, time) => {
+      const dateStr =
+        date instanceof Date ? date.toISOString().split("T")[0] : date;
+      const [hour, minute] = time.split(":");
+      const [year, month, day] = dateStr.split("-");
+
+      const dateTime = new Date(year, month - 1, day, hour, minute);
+      return dateTime.getTime();
+    };
+
+    const newStartTimestamp = getTimestamp(startDate, startTime);
+    const newEndTimestamp = getTimestamp(endDate, endTime);
+
+    if (isNaN(newStartTimestamp) || isNaN(newEndTimestamp)) {
+      return res
+        .status(400)
+        .json({ success: false, message: "Invalid start or end date/time." });
+    }
+
+    const sessions = await Session.find({ groupId, _id: { $ne: sessionId } });
+
+    const isValid = sessions.every((session) => {
+      const sessionStartTimestamp = getTimestamp(
+        session.startDate,
+        session.startTime
+      );
+      const sessionEndTimestamp = getTimestamp(
+        session.endDate,
+        session.endTime
+      );
+
+      return (
+        newEndTimestamp <= sessionStartTimestamp ||
+        newStartTimestamp >= sessionEndTimestamp
+      );
+    });
+
+    if (!isValid) {
+      return res.status(400).json({
+        success: false,
+        message: "The session overlaps with an existing session.",
+      });
+    }
+
+    const updatedSession = await Session.findByIdAndUpdate(
+      sessionId,
+      {
+        name: name,
+        startDate: startDate,
+        endDate: endDate,
+        startTime: startTime,
+        endTime: endTime,
+        groupId: groupId,
+        acceptedBy: acceptedBy,
+      },
+      { new: true } // Return the updated document
+    );
+
+    if (!updatedSession) {
+      return res.status(404).json({
+        success: false,
+        message: "Session not found.",
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      message: "Session updated successfully!",
+      session: updatedSession,
+    });
+  } catch (error) {
+    console.error("Error updating session:", error);
+    res.status(500).json({
+      success: false,
+      message: "Error updating session.",
+      error: error.message,
+    });
+  }
+});
+
 app.get("/fetchUserSessions/:username", async (req, res) => {
   const username = req.params.username;
 
@@ -425,6 +552,59 @@ app.get("/fetchUserSessions/:username", async (req, res) => {
     });
   }
 });
+
+app.get("/fetchSessions/:groupId", async (req, res) => {
+  const groupId = req.params.groupId;
+  console.log(groupId);
+  try {
+    const sessions = await Session.find({
+      groupId: groupId,
+    });
+
+    res.json({
+      success: true,
+      sessions: sessions || [],
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: "Error fetching group sessions",
+      error: error.message,
+    });
+  }
+});
+
+app.get("/fetchSession/:sessionId", async (req, res) => {
+  const sessionId = req.params.sessionId;
+  console.log(sessionId);
+  try {
+    const session = await Session.findById(sessionId);
+    console.log(session);
+    res.json({
+      success: true,
+      session: session,
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: "Error fetching group sessions",
+      error: error.message,
+    });
+  }
+});
+
+app.delete("/deleteSession/:sessionId", async (req, res) => {
+  const { sessionId } = req.params;
+  try {
+    await Session.findByIdAndDelete(sessionId);
+    res.json({ success: true, message: "Session deleted successfully" });
+  } catch (error) {
+    res
+      .status(500)
+      .json({ success: false, message: "Failed to delete session" });
+  }
+});
+
 app.post("/sendMessage", async (req, res) => {
   const { senderId, groupId, content } = req.body;
 

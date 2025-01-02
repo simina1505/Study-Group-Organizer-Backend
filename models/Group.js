@@ -9,6 +9,7 @@ const GroupSchema = new mongoose.Schema(
     members: { type: [String], default: [] },
     requests: { type: [String], default: [] },
     privacy: { type: String, enum: ["Public", "Private"], default: "Public" },
+    city: { type: String, required: true },
     createdAt: { type: Date, default: Date.now },
     lastUpdated: { type: Date, default: Date.now },
     qrToken: { type: String },
