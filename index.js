@@ -15,6 +15,7 @@ import QRCode from "qrcode";
 import { Buffer } from "buffer";
 import axios from "axios";
 import haversine from "haversine";
+import Subject from "./models/Subjects.js";
 
 const storage = multer.memoryStorage();
 const upload = multer({ storage: storage });
@@ -237,9 +238,16 @@ app.get("/fetchGroup/:groupId", async (req, res) => {
 });
 
 app.get("/searchGroups", async (req, res) => {
-  const { query } = req.query;
-
+  const { query, userId } = req.query;
   try {
+    const user = await User.findById(userId);
+
+    if (!user) {
+      return res
+        .status(404)
+        .json({ success: false, message: "User not found" });
+    }
+
     const groups = await Group.find({
       privacy: "Public",
       $or: [
@@ -249,9 +257,16 @@ app.get("/searchGroups", async (req, res) => {
       ],
     });
 
+    const filteredGroups = groups.filter((group) => {
+      return !(
+        group.creator.toString() === user.username ||
+        group.members.includes(user.username)
+      );
+    });
+
     res.json({
       success: true,
-      groups: groups,
+      groups: filteredGroups,
     });
   } catch (error) {
     res.status(500).json({ success: false, message: "Error searching groups" });
@@ -450,7 +465,6 @@ app.post("/editSession/:sessionId", async (req, res) => {
   const { sessionId } = req.params;
   const { name, startDate, endDate, startTime, endTime, groupId, acceptedBy } =
     req.body;
-  console.log(sessionId);
   try {
     const getTimestamp = (date, time) => {
       const dateStr =
@@ -555,7 +569,7 @@ app.get("/fetchUserSessions/:username", async (req, res) => {
 
 app.get("/fetchSessions/:groupId", async (req, res) => {
   const groupId = req.params.groupId;
-  console.log(groupId);
+
   try {
     const sessions = await Session.find({
       groupId: groupId,
@@ -576,10 +590,10 @@ app.get("/fetchSessions/:groupId", async (req, res) => {
 
 app.get("/fetchSession/:sessionId", async (req, res) => {
   const sessionId = req.params.sessionId;
-  console.log(sessionId);
+
   try {
     const session = await Session.findById(sessionId);
-    console.log(session);
+
     res.json({
       success: true,
       session: session,
@@ -854,5 +868,44 @@ app.post("/joinGroup", async (req, res) => {
     res.json({ success: true, message: "You have joined the group." });
   } catch (error) {
     res.status(500).json({ success: false, message: "Error joining group." });
+  }
+});
+
+app.get("/getSubjects", async (req, res) => {
+  try {
+    const subjects = await Subject.find().select("key value").lean();
+
+    res.json({
+      success: true,
+      subjects: subjects,
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: "Error fetching subjects",
+      error: error.message,
+    });
+  }
+});
+
+app.get("/getUsernameById/:userId", async (req, res) => {
+  const { userId } = req.params;
+  try {
+    const user = await User.findById(userId);
+
+    if (!user) {
+      throw new Error("User not found");
+    }
+
+    res.json({
+      success: true,
+      username: user.username,
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: "Error fetching username",
+      error: error.message,
+    });
   }
 });
