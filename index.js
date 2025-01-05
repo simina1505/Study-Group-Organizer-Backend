@@ -429,13 +429,11 @@ app.post("/createSession", async (req, res) => {
     });
 
     if (!isValid) {
-      res.status(400).json({
+      return res.json({
         success: false,
         message: "The session overlaps with an existing session.",
       });
-      return;
     }
-
     const newSession = await Session.create({
       name: name,
       startDate: startDate,
