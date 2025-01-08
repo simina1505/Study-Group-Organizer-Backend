@@ -907,3 +907,105 @@ app.get("/getUsernameById/:userId", async (req, res) => {
     });
   }
 });
+
+app.get("/getUser/:userId", async (req, res) => {
+  const { userId } = req.params;
+  try {
+    const user = await User.findById(userId);
+
+    if (!user) {
+      throw new Error("User not found");
+    }
+
+    res.json({
+      success: true,
+      user: user,
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: "Error fetching username",
+      error: error.message,
+    });
+  }
+});
+
+app.post("/uploadProfilePicture", upload.single("file"), async (req, res) => {
+  const { userId } = req.body;
+  const file = req.file;
+
+  if (!file) {
+    return res
+      .status(400)
+      .json({ success: false, message: "File is required" });
+  }
+
+  try {
+    const oldProfilePicture = await User.findOne({ _id: userId }).select(
+      "profilePicture"
+    );
+
+    if (oldProfilePicture && oldProfilePicture.profilePicture) {
+      const oldFileId = oldProfilePicture.profilePicture.split("/images/")[1];
+      await gfs.delete(new mongoose.Types.ObjectId(oldFileId));
+      console.log(`Deleted old profile picture: ${oldFileId}`);
+    }
+
+    const uploadStream = gfs.openUploadStream(file.originalname, {
+      metadata: { userId },
+      contentType: file.mimetype,
+    });
+
+    uploadStream.end(file.buffer);
+
+    uploadStream.on("finish", async () => {
+      const profilePictureUri = `/images/${uploadStream.id}`;
+
+      const user = await User.findByIdAndUpdate(
+        userId,
+        { profilePicture: profilePictureUri },
+        { new: true }
+      );
+
+      if (!user) {
+        return res
+          .status(404)
+          .json({ success: false, message: "User not found" });
+      }
+
+      res.status(201).json({
+        success: true,
+        message: "Profile picture uploaded successfully",
+        profilePictureUri,
+      });
+    });
+  } catch (error) {
+    console.error("Error uploading profile picture:", error);
+    res.status(500).json({ success: false, message: "Internal server error" });
+  }
+});
+
+app.get("/getImageByUserId/:userId", async (req, res) => {
+  const { userId } = req.params;
+
+  try {
+    const files = await gfs.find({ "metadata.userId": userId }).toArray();
+
+    if (!files || files.length === 0) {
+      return res.status(404).json({ error: "Image not found" });
+    }
+    console.log(files);
+    const file = files[0];
+
+    if (file.contentType.includes("image")) {
+      const readStream = gfs.openDownloadStream(file._id);
+      res.setHeader("Content-Type", file.contentType);
+      readStream.pipe(res);
+    } else {
+      res.status(400).json({ error: "Not an image file" });
+    }
+  } catch (error) {
+    console.error("Error retrieving image:", error);
+    res.status(500).json({ error: "Error retrieving image" });
+  }
+});
