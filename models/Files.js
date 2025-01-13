@@ -12,9 +12,9 @@ const FileSchema = new mongoose.Schema(
       ref: "Group",
       required: true,
     },
-    fileName: { type: String, required: true }, // File name
-    // contentType: { type: String, required: true }, // MIME type (e.g., image/jpeg, application/pdf)
-    fileData: { type: mongoose.Schema.Types.ObjectId, ref: "fs.files" }, // File content stored as a binary blob
+    fileName: { type: String, required: true },
+    // contentType: { type: String, required: true },
+    fileData: { type: mongoose.Schema.Types.ObjectId, ref: "fs.files" },
     timestamp: { type: Date, default: Date.now },
   },
   { timestamps: true },

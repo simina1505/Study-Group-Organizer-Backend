@@ -53,6 +53,8 @@ app.get("/", (req, res) => {
   res.send({ status: "Started" });
 });
 
+// SIGN-UP
+
 app.post("/signUp", async (req, res) => {
   const { username, email, password, firstName, lastName, city } = req.body;
 
@@ -83,6 +85,8 @@ app.post("/signUp", async (req, res) => {
     res.send({ status: "error", data: error });
   }
 });
+
+// SIGN-IN
 
 app.post("/signIn", async (req, res) => {
   const { email, password } = req.body;
@@ -118,6 +122,8 @@ app.post("/signIn", async (req, res) => {
   }
 });
 
+// USER
+
 app.post("/checkUserExistence", async (req, res) => {
   const { field, value } = req.body;
 
@@ -139,6 +145,52 @@ app.post("/checkUserExistence", async (req, res) => {
       .send({ available: false, message: "Error checking user availability." });
   }
 });
+
+app.get("/getUsernameById/:userId", async (req, res) => {
+  const { userId } = req.params;
+  try {
+    const user = await User.findById(userId);
+
+    if (!user) {
+      throw new Error("User not found");
+    }
+
+    res.json({
+      success: true,
+      username: user.username,
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: "Error fetching username",
+      error: error.message,
+    });
+  }
+});
+
+app.get("/getUser/:userId", async (req, res) => {
+  const { userId } = req.params;
+  try {
+    const user = await User.findById(userId);
+
+    if (!user) {
+      throw new Error("User not found");
+    }
+
+    res.json({
+      success: true,
+      user: user,
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: "Error fetching username",
+      error: error.message,
+    });
+  }
+});
+
+// GROUP
 
 app.post("/createGroup", async (req, res) => {
   const { name, description, subject, privacy, creator, city } = req.body;
@@ -311,7 +363,7 @@ app.post("/leaveGroup", async (req, res) => {
 });
 
 app.post("/sendRequestToJoin", async (req, res) => {
-  const { groupId, username } = req.body; // Use req.query for query parameters or req.body for POST
+  const { groupId, username } = req.body;
 
   try {
     const group = await Group.findByIdAndUpdate(
@@ -361,7 +413,7 @@ app.post("/acceptRequest", async (req, res) => {
 });
 
 app.post("/declineRequest", async (req, res) => {
-  const { groupId, username } = req.body; // Use req.query for query parameters or req.body for POST
+  const { groupId, username } = req.body;
 
   try {
     const group = await Group.findByIdAndUpdate(
@@ -385,6 +437,53 @@ app.post("/declineRequest", async (req, res) => {
     res.status(500).json({ success: false, message: "Error updating group" });
   }
 });
+
+app.post("/joinGroup", async (req, res) => {
+  const { token, username } = req.body;
+  console.log(token);
+  try {
+    const group = await Group.findOne({ qrToken: token });
+    if (!group) {
+      return res.status(404).json({ message: "Group not found." });
+    }
+
+    if (group.members.includes(username)) {
+      return res.json({
+        success: false,
+        message: "You are already a member of this group.",
+      });
+    }
+
+    await Group.findByIdAndUpdate(
+      group._id,
+      { $push: { members: username } },
+      { new: true }
+    );
+
+    res.json({ success: true, message: "You have joined the group." });
+  } catch (error) {
+    res.status(500).json({ success: false, message: "Error joining group." });
+  }
+});
+
+app.get("/getSubjects", async (req, res) => {
+  try {
+    const subjects = await Subject.find().select("key value").lean();
+
+    res.json({
+      success: true,
+      subjects: subjects,
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: "Error fetching subjects",
+      error: error.message,
+    });
+  }
+});
+
+//SESSIONS
 
 app.post("/createSession", async (req, res) => {
   const { name, startDate, endDate, startTime, endTime, groupId, acceptedBy } =
@@ -519,7 +618,7 @@ app.post("/editSession/:sessionId", async (req, res) => {
         groupId: groupId,
         acceptedBy: acceptedBy,
       },
-      { new: true } // Return the updated document
+      { new: true }
     );
 
     if (!updatedSession) {
@@ -617,6 +716,8 @@ app.delete("/deleteSession/:sessionId", async (req, res) => {
   }
 });
 
+// MESSAGES AND FILES
+
 app.post("/sendMessage", async (req, res) => {
   const { senderId, groupId, content } = req.body;
 
@@ -634,7 +735,6 @@ app.post("/sendMessage", async (req, res) => {
   }
 });
 
-// Save a file message
 app.post("/sendFile", upload.single("file"), async (req, res) => {
   const { senderId, groupId } = req.body;
   const file = req.file;
@@ -702,7 +802,6 @@ app.get("/fetchMessagesandFiles/:groupId", async (req, res) => {
   }
 });
 
-// Retrieve a file by ID
 app.get("/downloadById/:fileId", async (req, res) => {
   const fileId = req.params.fileId;
   if (!gfs) {
@@ -816,6 +915,8 @@ app.get("/getFileMetadata/:fileName", async (req, res) => {
   }
 });
 
+// QR CODE
+
 app.post("/generateGroupQRCode", async (req, res) => {
   const { groupId, username } = req.body;
 
@@ -829,7 +930,7 @@ app.post("/generateGroupQRCode", async (req, res) => {
 
     const token = crypto.randomBytes(8).toString("hex");
 
-    await Group.findByIdAndUpdate(groupId, { $push: { qrToken: token } });
+    await Group.findByIdAndUpdate(groupId, { qrToken: token });
 
     const qrCodeData = `http://172.20.10.5:8000/joinGroup?token=${token}`;
     const qrCode = await QRCode.toDataURL(qrCodeData);
@@ -842,93 +943,7 @@ app.post("/generateGroupQRCode", async (req, res) => {
   }
 });
 
-app.post("/joinGroup", async (req, res) => {
-  const { token, username } = req.body;
-  try {
-    const group = await Group.findOne({ qrToken: token });
-    if (!group) {
-      return res.status(404).json({ message: "Group not found." });
-    }
-
-    if (group.members.includes(username)) {
-      return res.json({
-        success: false,
-        message: "You are already a member of this group.",
-      });
-    }
-
-    await Group.findByIdAndUpdate(
-      group._id,
-      { $push: { members: username }, $pull: { qrToken: token } },
-      { new: true }
-    );
-
-    res.json({ success: true, message: "You have joined the group." });
-  } catch (error) {
-    res.status(500).json({ success: false, message: "Error joining group." });
-  }
-});
-
-app.get("/getSubjects", async (req, res) => {
-  try {
-    const subjects = await Subject.find().select("key value").lean();
-
-    res.json({
-      success: true,
-      subjects: subjects,
-    });
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: "Error fetching subjects",
-      error: error.message,
-    });
-  }
-});
-
-app.get("/getUsernameById/:userId", async (req, res) => {
-  const { userId } = req.params;
-  try {
-    const user = await User.findById(userId);
-
-    if (!user) {
-      throw new Error("User not found");
-    }
-
-    res.json({
-      success: true,
-      username: user.username,
-    });
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: "Error fetching username",
-      error: error.message,
-    });
-  }
-});
-
-app.get("/getUser/:userId", async (req, res) => {
-  const { userId } = req.params;
-  try {
-    const user = await User.findById(userId);
-
-    if (!user) {
-      throw new Error("User not found");
-    }
-
-    res.json({
-      success: true,
-      user: user,
-    });
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: "Error fetching username",
-      error: error.message,
-    });
-  }
-});
+// PROFILE
 
 app.post("/uploadProfilePicture", upload.single("file"), async (req, res) => {
   const { userId } = req.body;
