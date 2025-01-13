@@ -447,10 +447,10 @@ app.post("/joinGroup", async (req, res) => {
       return res.status(404).json({ message: "Group not found." });
     }
 
-    if (group.members.includes(username)) {
+    if (group.members.includes(username) || group.creator == username) {
       return res.json({
         success: false,
-        message: "You are already a member of this group.",
+        message: "You are already in this group.",
       });
     }
 
